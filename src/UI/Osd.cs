@@ -1,12 +1,11 @@
 using System;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
-// Small brightness indicator near the bottom of the screen; never takes focus.
+// Small brightness indicator near the bottom of the screen; never takes focus. Drawn like the window's brightness bar.
 class Osd : Form
 {
-    const int WS_EX_NOACTIVATE = 0x08000000, WS_EX_TOOLWINDOW = 0x80, WS_EX_TRANSPARENT = 0x20;
+    const int WS_EX_NOACTIVATE = 0x08000000, WS_EX_TOOLWINDOW = 0x80, WS_EX_TRANSPARENT = 0x20, Inset = 8;
 
     readonly Timer hideTimer = new Timer { Interval = 1200 };
     int value;
@@ -14,8 +13,9 @@ class Osd : Form
     public Osd()
     {
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
-        StartPosition = FormStartPosition.Manual; BackColor = Theme.Card;
-        Size = new Size(260, 56); DoubleBuffered = true;
+        StartPosition = FormStartPosition.Manual; BackColor = Theme.Bg; Font = Theme.Body;
+        Size = new Size(280, Font.Height * 2 + Inset * 2); DoubleBuffered = true;
+        Theme.StyleWindow(this, true);
         hideTimer.Tick += (s, e) => { hideTimer.Stop(); Hide(); };
     }
 
@@ -43,13 +43,7 @@ class Osd : Form
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var p = new Pen(Theme.CardBorder)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
-        using (var b = new SolidBrush(Theme.Text)) g.DrawString("☀  " + value, Theme.Title, b, 14, 14);
-        var bar = new Rectangle(90, 25, Width - 108, 6);
-        using (var b = new SolidBrush(Theme.Btn)) g.FillRectangle(b, bar);
-        using (var b = new SolidBrush(Theme.Accent)) g.FillRectangle(b, bar.X, bar.Y, bar.Width * value / 100, bar.Height);
+        Meter.Draw(e.Graphics, Rectangle.Inflate(ClientRectangle, -Inset, -Inset), "Brightness", value, 100, Font);
     }
 
     protected override void Dispose(bool disposing)

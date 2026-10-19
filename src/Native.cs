@@ -9,7 +9,7 @@ static class Native
     public const int WM_HOTKEY = 0x0312;
     public const uint MOD_ALT = 1, MOD_CONTROL = 2, MOD_SHIFT = 4, MOD_WIN = 8, MOD_NOREPEAT = 0x4000;
     public const int MONITORINFOF_PRIMARY = 1, DISPLAY_DEVICE_ACTIVE = 1, ENUM_CURRENT_SETTINGS = -1;
-    public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+    public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWA_BORDER_COLOR = 34, DWMWA_CAPTION_COLOR = 35, DWMWA_TEXT_COLOR = 36, DWMWCP_ROUNDSMALL = 3;
 
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);

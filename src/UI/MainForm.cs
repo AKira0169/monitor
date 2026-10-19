@@ -26,10 +26,11 @@ class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen; KeyPreview = true;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(520, 360);
+        Theme.StyleWindow(this, false);
 
         var header = new Panel { Dock = DockStyle.Top, Height = HeaderHeight, Padding = new Padding(16, 12, 16, 0) };
         header.Controls.Add(new Label { Text = "Monitors", Font = Theme.Title, AutoSize = true, Location = new Point(16, 12) });
-        var refresh = new FlatBtn("Refresh  F5", false) { Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        var refresh = new FlatBtn("Refresh", "F5", false) { Anchor = AnchorStyles.Top | AnchorStyles.Right };
         refresh.Click += (s, e) => Reload(true);
         header.Controls.Add(refresh);
         header.Layout += (s, e) => refresh.Location = new Point(header.Width - refresh.Width - 16, 10);
@@ -43,6 +44,9 @@ class MainForm : Form
         hotkeyInfo = new Label { Dock = DockStyle.Top, Height = 22, ForeColor = Theme.Muted, Font = Theme.Small, AutoEllipsis = true };
         status = new Label { Dock = DockStyle.Top, Height = 22, ForeColor = Theme.Muted, Font = Theme.Small };
         footer.Controls.Add(status); footer.Controls.Add(hotkeyInfo);
+        // Bold ink rules close off the header and footer sections.
+        header.Paint += (s, e) => Rule(e.Graphics, header.Height - Theme.Border);
+        footer.Paint += (s, e) => Rule(e.Graphics, 0);
 
         Controls.Add(list); Controls.Add(footer); Controls.Add(header);
         RefreshHotkeys(failedHotkeys);
@@ -51,24 +55,17 @@ class MainForm : Form
         KeyDown += OnKey;
     }
 
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        int on = 1;   // dark title bar on Windows 10 20H1+ / 11
-        Native.DwmSetWindowAttribute(Handle, Native.DWMWA_USE_IMMERSIVE_DARK_MODE, ref on, 4);
-    }
-
     public void RefreshHotkeys(IList<string> failed)
     {
         if (failed.Count > 0)
         {
             hotkeyInfo.ForeColor = Theme.Warn;
-            hotkeyInfo.Text = "Hotkey in use by another app: " + string.Join(", ", failed) + "  (tray → Edit settings file)";
+            hotkeyInfo.Text = "Another app already uses " + string.Join(", ", failed) + ". Assign a different hotkey, or edit it from the tray menu.";
         }
         else
         {
             hotkeyInfo.ForeColor = Theme.Muted;
-            hotkeyInfo.Text = KeyText.Format(Settings.ShowKey) + " show / hide   ·   Ctrl+Alt+↑↓ brightness (←→ fine)";
+            hotkeyInfo.Text = KeyText.Format(Settings.ShowKey) + " shows this window.  Ctrl+Alt+↑↓ brightness, ←→ fine steps.";
         }
     }
 
@@ -79,11 +76,19 @@ class MainForm : Form
         // 1..9 switch the first monitor to its Nth input.
         if (e.Modifiers == Keys.None && e.KeyCode >= Keys.D1 && e.KeyCode <= Keys.D9)
         {
-            var m = monitors.FirstOrDefault(x => x.DdcOk);
+            var m = NumberKeyTarget();
             int n = e.KeyCode - Keys.D1;
             if (m != null && n < m.Inputs.Count) DoSwitch(m, m.Inputs[n]);
         }
     }
+
+    void Rule(Graphics g, int y)
+    {
+        using (var b = new SolidBrush(Theme.Ink)) g.FillRectangle(b, 0, y, ClientSize.Width, Theme.Border);
+    }
+
+    // The monitor whose inputs the 1-9 keys switch.
+    MonitorInfo NumberKeyTarget() { return monitors.FirstOrDefault(x => x.DdcOk); }
 
     public void Reload(bool showLoading)
     {
@@ -119,7 +124,7 @@ class MainForm : Form
 
     static string StatusText(int count)
     {
-        return count + " monitor" + (count == 1 ? "" : "s") + "   ·   1-9 switch input   ·   Esc hide   ·   right-click an input for hotkey / name";
+        return count + " monitor" + (count == 1 ? "" : "s") + ".  Right-click an input to set its hotkey or name.  Esc hides.";
     }
 
     void Render()
@@ -130,9 +135,10 @@ class MainForm : Form
         foreach (var c in old) c.Dispose();   // Controls.Clear() alone leaks window handles and timers
 
         int width = list.ClientSize.Width - list.Padding.Horizontal - 2;
-        foreach (var m in monitors) list.Controls.Add(Card(m, width));
+        var numbered = NumberKeyTarget();
+        foreach (var m in monitors) list.Controls.Add(Card(m, width, m == numbered));
         if (monitors.Count == 0)
-            list.Controls.Add(new Label { Text = "No monitors found.", ForeColor = Theme.Muted, AutoSize = true });
+            list.Controls.Add(new Label { Text = "No monitors found. Check the cables, then press F5.", ForeColor = Theme.Muted, AutoSize = true });
         list.ResumeLayout();
 
         // Grow the window to fit the cards (up to a limit) so there is no scrolling in the usual case.
@@ -140,9 +146,9 @@ class MainForm : Form
         ClientSize = new Size(ClientSize.Width, Math.Max(MinClientHeight, Math.Min(needed, MaxClientHeight)));
     }
 
-    Control Card(MonitorInfo m, int width)
+    Control Card(MonitorInfo m, int width, bool numberKeys)
     {
-        var card = new MonitorCard(m, width);
+        var card = new MonitorCard(m, width, numberKeys);
         card.SwitchRequested += DoSwitch;
         card.InputMenuRequested += ShowInputMenu;
         card.BrightnessChanged += (mon, value) => app.SetBrightness(mon.ShortId, mon.Device, value);

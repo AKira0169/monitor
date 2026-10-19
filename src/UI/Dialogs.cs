@@ -33,7 +33,7 @@ static class Dialogs
         using (var f = Dialog(prompt))
         {
             var box = new TextBox { Text = value, Dock = DockStyle.Top, BackColor = Theme.Btn, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle };
-            var ok = new FlatBtn("Save", true) { Dock = DockStyle.Bottom };
+            var ok = new FlatBtn("Save", "Enter", true) { Dock = DockStyle.Bottom };
             ok.Click += (s, e) => { result = box.Text; f.Close(); };
             f.AcceptButton = ok;
             f.Controls.Add(ok); f.Controls.Add(box);
@@ -44,12 +44,14 @@ static class Dialogs
 
     static Form Dialog(string title)
     {
-        return new Form
+        var f = new Form
         {
             Text = title, BackColor = Theme.Bg, ForeColor = Theme.Text, Font = Theme.Body,
             FormBorderStyle = FormBorderStyle.FixedDialog, MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false,
             StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(340, 110), Padding = new Padding(16),
             AutoScaleMode = AutoScaleMode.Dpi
         };
+        Theme.StyleWindow(f, false);
+        return f;
     }
 }
