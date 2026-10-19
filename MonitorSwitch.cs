@@ -215,6 +215,23 @@ static class Ddc
         return result.OrderBy(x => x.X).ThenBy(x => x.Y).ToList();
     }
 
+    // Changes brightness on every DDC monitor by delta; returns the new value of the first one, or -1.
+    public static int AdjustBrightness(int delta)
+    {
+        int result = -1;
+        lock (Lock)
+        {
+            ForEach((m, h) =>
+            {
+                uint cur, max;
+                if (!Native.GetVCPFeatureAndVCPFeatureReply(h, VCP_BRIGHTNESS, IntPtr.Zero, out cur, out max)) return;
+                int v = Math.Max(0, Math.Min((int)max, (int)cur + delta));
+                if (Native.SetVCPFeature(h, VCP_BRIGHTNESS, (uint)v) && result < 0) result = v * 100 / (int)Math.Max(1, max);
+            });
+        }
+        return result;
+    }
+
     // Sets a VCP value on the monitor with the given short id (or on all monitors if id is "*").
     public static string Set(string shortId, byte code, int value)
     {
@@ -292,6 +309,7 @@ static class Settings
     static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MonitorSwitch");
     static readonly string FilePath = Path.Combine(Dir, "settings.ini");
     public static Keys ShowKey = Keys.Control | Keys.Alt | Keys.D0;
+    public static int BrightnessStep = 10;   // Ctrl+Alt+Up/Down; Left/Right use a fine step of 2
     public static List<Binding> Bindings = new List<Binding>();
     public static Dictionary<string, string> Labels = new Dictionary<string, string>();   // "ACR075A:15" -> "Desktop"
     public static Dictionary<string, List<int>> InputCache = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
@@ -319,6 +337,7 @@ static class Settings
             try
             {
                 if (key == "show") ShowKey = ParseKeys(val);
+                else if (key == "brightness_step") BrightnessStep = Math.Max(1, int.Parse(val));
                 else if (key == "hotkey" && f.Length == 3)
                     Bindings.Add(new Binding { Key = ParseKeys(f[0]), MonitorId = f[1], Input = int.Parse(f[2]) });
                 else if (key == "label" && f.Length >= 3)
@@ -336,6 +355,7 @@ static class Settings
         var sb = new StringBuilder();
         sb.AppendLine("# MonitorSwitch settings. Input codes: 15=DisplayPort 1, 16=DisplayPort 2, 17=HDMI 1, 18=HDMI 2");
         sb.AppendLine("show=" + FormatKeys(ShowKey));
+        sb.AppendLine("brightness_step=" + BrightnessStep);
         foreach (var b in Bindings) sb.AppendLine("hotkey=" + FormatKeys(b.Key) + "," + b.MonitorId + "," + b.Input);
         foreach (var kv in Labels)
         {
@@ -401,7 +421,9 @@ static class Settings
 class HotkeyWindow : NativeWindow, IDisposable
 {
     readonly List<int> ids = new List<int>();
-    public event Action<int> Pressed;   // index into Settings.Bindings, -1 = show window
+    public const int ShowId = 0, BrightnessBaseId = 100;   // 1..N = Settings.Bindings
+    public static readonly Keys[] BrightnessKeys = { Keys.Up, Keys.Down, Keys.Right, Keys.Left };
+    public event Action<int> Pressed;   // hotkey id
     public List<string> Failed = new List<string>();
 
     public HotkeyWindow() { CreateHandle(new CreateParams()); }
@@ -410,13 +432,15 @@ class HotkeyWindow : NativeWindow, IDisposable
     {
         foreach (var id in ids) Native.UnregisterHotKey(Handle, id);
         ids.Clear(); Failed.Clear();
-        Add(0, Settings.ShowKey);
-        for (int i = 0; i < Settings.Bindings.Count; i++) Add(i + 1, Settings.Bindings[i].Key);
+        Add(ShowId, Settings.ShowKey, true);
+        for (int i = 0; i < Settings.Bindings.Count; i++) Add(i + 1, Settings.Bindings[i].Key, true);
+        // Brightness keys auto-repeat while held.
+        for (int i = 0; i < BrightnessKeys.Length; i++) Add(BrightnessBaseId + i, Keys.Control | Keys.Alt | BrightnessKeys[i], false);
     }
 
-    void Add(int id, Keys k)
+    void Add(int id, Keys k, bool noRepeat)
     {
-        uint mods = Native.MOD_NOREPEAT;
+        uint mods = noRepeat ? Native.MOD_NOREPEAT : 0;
         if ((k & Keys.Control) != 0) mods |= Native.MOD_CONTROL;
         if ((k & Keys.Alt) != 0) mods |= Native.MOD_ALT;
         if ((k & Keys.Shift) != 0) mods |= Native.MOD_SHIFT;
@@ -426,7 +450,7 @@ class HotkeyWindow : NativeWindow, IDisposable
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == Native.WM_HOTKEY && Pressed != null) Pressed(m.WParam.ToInt32() - 1);
+        if (m.Msg == Native.WM_HOTKEY && Pressed != null) Pressed(m.WParam.ToInt32());
         else base.WndProc(ref m);
     }
 
@@ -446,6 +470,8 @@ class TrayApp
     {
         ui.CreateControl();
         Settings.Load();
+        // Keep the startup entry pointing at wherever this exe lives now (it may have been moved).
+        if (Settings.StartWithWindows) Settings.StartWithWindows = true;
         hotkeys = new HotkeyWindow();
         hotkeys.Pressed += OnHotkey;
         hotkeys.Register();
@@ -497,11 +523,53 @@ class TrayApp
         if (form != null && !form.IsDisposed) form.RefreshHotkeys(hotkeys.Failed);
     }
 
-    void OnHotkey(int index)
+    void OnHotkey(int id)
     {
-        if (index < 0) { if (form != null && form.Visible && Form.ActiveForm == form) form.Hide(); else ShowWindow(); return; }
-        var b = Settings.Bindings[index];
+        if (id == HotkeyWindow.ShowId) { if (form != null && form.Visible && Form.ActiveForm == form) form.Hide(); else ShowWindow(); return; }
+        if (id >= HotkeyWindow.BrightnessBaseId)
+        {
+            var k = HotkeyWindow.BrightnessKeys[id - HotkeyWindow.BrightnessBaseId];
+            int step = k == Keys.Up || k == Keys.Down ? Settings.BrightnessStep : 2;
+            AdjustBrightness(k == Keys.Up || k == Keys.Right ? step : -step);
+            return;
+        }
+        var b = Settings.Bindings[id - 1];
         Switch(b.MonitorId, b.Input);
+    }
+
+    // Key repeat fires faster than DDC can write, so presses are summed and applied by one worker.
+    readonly object brightLock = new object();
+    int pendingDelta;
+    bool adjusting;
+    readonly Osd osd = new Osd();
+
+    void AdjustBrightness(int delta)
+    {
+        lock (brightLock)
+        {
+            pendingDelta += delta;
+            if (adjusting) return;
+            adjusting = true;
+        }
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            while (true)
+            {
+                int d;
+                lock (brightLock)
+                {
+                    d = pendingDelta; pendingDelta = 0;
+                    if (d == 0) { adjusting = false; break; }
+                }
+                int v = Ddc.AdjustBrightness(d);
+                ui.BeginInvoke((Action)(() =>
+                {
+                    if (v >= 0) osd.ShowValue(v);
+                    else tray.ShowBalloonTip(3000, "MonitorSwitch", "Brightness: no DDC/CI monitor on this PC", ToolTipIcon.Warning);
+                }));
+            }
+            ui.BeginInvoke((Action)(() => { if (form != null && !form.IsDisposed && form.Visible) form.Reload(false); }));
+        });
     }
 
     public void Switch(string id, int input)
@@ -540,6 +608,53 @@ class ShowListener : NativeWindow
     {
         if (m.Msg == Native.WM_SHOWME) show();
         base.WndProc(ref m);
+    }
+}
+
+// Small brightness indicator near the bottom of the screen; never takes focus.
+class Osd : Form
+{
+    readonly System.Windows.Forms.Timer hideTimer = new System.Windows.Forms.Timer { Interval = 1200 };
+    int value;
+
+    public Osd()
+    {
+        FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
+        StartPosition = FormStartPosition.Manual; BackColor = Theme.Card;
+        Size = new Size(260, 56); DoubleBuffered = true;
+        hideTimer.Tick += (s, e) => { hideTimer.Stop(); Hide(); };
+    }
+
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |= 0x08000000 | 0x80 | 0x20;   // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
+            return cp;
+        }
+    }
+
+    public void ShowValue(int v)
+    {
+        value = v;
+        var wa = Screen.PrimaryScreen.WorkingArea;
+        Location = new Point(wa.Left + (wa.Width - Width) / 2, wa.Bottom - Height - 80);
+        if (!Visible) Show();
+        Invalidate();
+        hideTimer.Stop(); hideTimer.Start();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using (var p = new Pen(Theme.CardBorder)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+        using (var b = new SolidBrush(Theme.Text)) g.DrawString("☀  " + value, Theme.Title, b, 14, 14);
+        var bar = new Rectangle(90, 25, Width - 108, 6);
+        using (var b = new SolidBrush(Theme.Btn)) g.FillRectangle(b, bar);
+        using (var b = new SolidBrush(Theme.Accent)) g.FillRectangle(b, bar.X, bar.Y, bar.Width * value / 100, bar.Height);
     }
 }
 
@@ -595,12 +710,14 @@ class FlatBtn : Button
     }
 }
 
-// Scrolling over the window must not silently change monitor brightness.
+// Mouse-drag only: scrolling over the window or keys (Ctrl+Alt+arrows) must not move it.
 class NoWheelTrackBar : TrackBar
 {
+    public NoWheelTrackBar() { TabStop = false; }
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == 0x020A) return;   // WM_MOUSEWHEEL
+        if (m.Msg == 0x020A) return;                        // WM_MOUSEWHEEL
+        if (m.Msg >= 0x0100 && m.Msg <= 0x0109) return;     // WM_KEYDOWN .. WM_UNICHAR
         base.WndProc(ref m);
     }
 }
@@ -665,7 +782,7 @@ class MainForm : Form
         else
         {
             hotkeyInfo.ForeColor = Theme.Muted;
-            hotkeyInfo.Text = Settings.FormatKeys(Settings.ShowKey) + " show / hide this window   ·   tray icon → Start with Windows";
+            hotkeyInfo.Text = Settings.FormatKeys(Settings.ShowKey) + " show / hide   ·   Ctrl+Alt+↑↓ brightness (←→ fine)";
         }
     }
 
@@ -777,7 +894,7 @@ class MainForm : Form
                 timer.Stop(); int v = bar.Value; var id = m.ShortId;
                 ThreadPool.QueueUserWorkItem(_ => Ddc.Set(id, Ddc.VCP_BRIGHTNESS, v));
             };
-            bar.ValueChanged += (s, e) => { bl.Text = "BRIGHTNESS  " + bar.Value; m.Brightness = bar.Value; timer.Stop(); timer.Start(); };
+            bar.Scroll += (s, e) => { bl.Text = "BRIGHTNESS  " + bar.Value; m.Brightness = bar.Value; timer.Stop(); timer.Start(); };
             card.Controls.Add(bar);
             y += bar.Height;
         }
