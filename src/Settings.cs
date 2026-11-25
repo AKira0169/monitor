@@ -9,12 +9,12 @@ using Microsoft.Win32;
 class Binding
 {
     public Keys Key;          // key code | modifier flags
-    public string MonitorId;  // short id, or Ddc.AllMonitors
+    public string MonitorId;  // unit id (one monitor), short id (every monitor of that model), or Ddc.AllMonitors
     public int Input;
 
-    public bool Targets(string shortId, int input)
+    public bool Targets(MonitorInfo m, int input)
     {
-        return Input == input && (MonitorId == Ddc.AllMonitors || string.Equals(MonitorId, shortId, StringComparison.OrdinalIgnoreCase));
+        return Input == input && m.Matches(MonitorId);
     }
 }
 
@@ -123,7 +123,37 @@ static class Settings
     public static string Label(string shortId, int input)
     {
         string l;
-        return Labels.TryGetValue(LabelKey(shortId, input), out l) ? l : null;
+        return Labels.TryGetValue(LabelKey(shortId, input), out l) && l.Length > 0 ? l : null;
+    }
+
+    // Stores an explicit empty label for id, hiding a model-wide label for that unit.
+    public static void HideLabel(string id, int input) { Labels[LabelKey(id, input)] = ""; }
+
+    // Label for one monitor: its own unit entry wins, else the model-wide entry.
+    // An entry for the unit may be empty: an explicit "no label" that hides the model-wide one.
+    public static string Label(MonitorInfo m, int input)
+    {
+        foreach (var id in new[] { m.UnitId, m.PortId, m.ShortId })
+        {
+            string l;
+            if (Labels.TryGetValue(LabelKey(id, input), out l)) return l.Length > 0 ? l : null;
+        }
+        return null;
+    }
+
+    // Label for a stored binding id; a unit id (ShortId-xxxx) falls back to the model-wide label.
+    public static string LabelById(string id, int input)
+    {
+        var l = Label(id, input);
+        int dash = id.IndexOf('-');
+        return l ?? (dash > 0 ? Label(id.Substring(0, dash), input) : null);
+    }
+
+    // Binding shown for one monitor: one for its own unit wins over model-wide/"*" ones.
+    public static Binding FindBinding(MonitorInfo m, int input)
+    {
+        return Bindings.FirstOrDefault(b => b.Input == input && m.IsUnit(b.MonitorId))
+            ?? Bindings.FirstOrDefault(b => b.Targets(m, input));
     }
 
     // Empty/whitespace name removes the label. Commas would break the file format.

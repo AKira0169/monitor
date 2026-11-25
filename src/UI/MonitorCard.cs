@@ -28,25 +28,45 @@ class MonitorCard : Panel
             Controls.Add(new Label { Text = "Primary", ForeColor = Theme.Muted, Font = Theme.Small, AutoSize = true, Location = new Point(title.Right + 6, 16) });
         Controls.Add(new Label
         {
-            Text = m.Width + " × " + m.Height + ", " + m.Hz + " Hz\n" + m.Device + " (" + m.ShortId + ") on " + m.Adapter + ", at " + m.X + "," + m.Y,
+            Text = m.Width + " × " + m.Height + ", " + m.Hz + " Hz\n" + m.Device + " (" + m.UnitId + ") on " + m.Adapter + ", at " + m.X + "," + m.Y,
             ForeColor = Theme.Muted, Font = Theme.Small, AutoSize = true, Location = new Point(16, 38)
         });
 
-        int y = 82;
-        if (!m.DdcOk)
-        {
-            Controls.Add(new Label
-            {
-                Text = m.Loaded ? "Can't control this monitor. Turn on DDC/CI in its on-screen menu, then press F5." : "Reading inputs…",
-                ForeColor = m.Loaded ? Theme.Warn : Theme.Muted, AutoSize = true, Location = new Point(16, y)
-            });
-            Height = y + 34;
-            return;
-        }
-
-        y = AddInputs(y, numberKeys);
+        int y = AddSupport(82);
+        if (m.DdcOk) y = AddInputs(y, numberKeys);
         if (m.Brightness >= 0) y = AddBrightness(y);
         Height = y + 12;
+    }
+
+    // Compact "what works on this display" line, with the most likely reason when nothing does.
+    int AddSupport(int y)
+    {
+        var m = monitor;
+        string text; bool warn = false;
+        if (!m.Loaded) text = "Reading inputs…";
+        else if (m.SwitchedAway) text = "Switched to another input, so it isn't answering (normal). It returns when it shows this PC again.";
+        else if (m.DdcOk)
+        {
+            string via = m.BrightnessVia == BrightnessSource.Wmi ? "Windows" : "DDC/CI";
+            text = "Input switching " + (m.CanSwitchInput ? "✓" : "✗ (no input list)") + " · Brightness " + (m.Brightness >= 0 ? "✓ (" + via + ")" : "✗");
+        }
+        else if (m.BrightnessVia == BrightnessSource.Wmi) text = "Brightness only (Windows/laptop panel). Input switching isn't available for this display.";
+        else
+        {
+            warn = true;
+            text = "Not controllable: DDC/CI did not respond. Enable DDC/CI in the monitor's on-screen menu and avoid docks, adapters or KVMs that block it, then press F5.";
+            if (m.NoHandle) text = "Not controllable: Windows exposes no DDC/CI for this display (virtual display, or a laptop panel without brightness support).";
+            else if (m.Adapter != null && (m.Adapter.IndexOf("DisplayLink", StringComparison.OrdinalIgnoreCase) >= 0 || m.Adapter.IndexOf("USB", StringComparison.OrdinalIgnoreCase) >= 0))
+                text = "Not controllable: this display is behind a USB/DisplayLink adapter, which usually blocks DDC/CI.";
+            if (m.Quirk != null && !string.IsNullOrEmpty(m.Quirk.Note)) text += " " + m.Quirk.Note;
+        }
+        var lbl = new Label
+        {
+            Text = text, Font = Theme.Small, ForeColor = warn ? Theme.Warn : Theme.Muted,
+            AutoSize = true, MaximumSize = new Size(Width - 32, 0), Location = new Point(16, y)
+        };
+        Controls.Add(lbl);
+        return y + lbl.GetPreferredSize(new Size(Width - 32, 0)).Height + 8;
     }
 
     int AddInputs(int y, bool numberKeys)
@@ -55,8 +75,8 @@ class MonitorCard : Panel
         for (int i = 0; i < monitor.Inputs.Count; i++)
         {
             int code = monitor.Inputs[i];
-            var label = Settings.Label(monitor.ShortId, code);
-            var hk = Settings.Bindings.FirstOrDefault(b => b.Targets(monitor.ShortId, code));
+            var label = Settings.Label(monitor, code);
+            var hk = Settings.FindBinding(monitor, code);
             var text = (numberKeys && i < 9 ? (i + 1) + "   " : "") + (label ?? Ddc.InputName(code));
             var hint = (label != null ? Ddc.InputName(code) : "") + (label != null && hk != null ? "  " : "") + (hk != null ? KeyText.Format(hk.Key) : "");
             var btn = new FlatBtn(text, hint.Length > 0 ? hint : null, code == monitor.Input);

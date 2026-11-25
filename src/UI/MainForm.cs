@@ -164,14 +164,25 @@ class MainForm : Form
         inputMenu.Items.Add("Assign hotkey…", null, (s, e) => AssignHotkey(m, code));
         inputMenu.Items.Add("Remove hotkey", null, (s, e) =>
         {
-            Settings.Bindings.RemoveAll(b => IsBindingFor(b, m, code));
+            RemoveHotkey(m, code);
             ApplySettings();
         });
         inputMenu.Items.Add("Rename…", null, (s, e) =>
         {
-            var name = Dialogs.AskText(this, "Name for " + Ddc.InputName(code) + " (e.g. Desktop, Laptop)", Settings.Label(m.ShortId, code) ?? "");
+            var name = Dialogs.AskText(this, "Name for " + Ddc.InputName(code) + " (e.g. Desktop, Laptop)", Settings.Label(m, code) ?? "");
             if (name == null) return;
-            Settings.SetLabel(m.ShortId, code, name);
+            Settings.SetLabel(StorageId(m), code, name);
+            if (IsShared(m))
+            {
+                // An emptied name must stay empty for this unit, not fall back to the model-wide label.
+                if (name.Trim().Length == 0 && Settings.Label(m.ShortId, code) != null) Settings.HideLabel(m.UnitId, code);
+            }
+            else if (m.UnitId != m.ShortId)
+            {
+                // Drop stale per-unit entries that would shadow the model-wide one just stored.
+                Settings.SetLabel(m.UnitId, code, "");
+                Settings.SetLabel(m.PortId, code, "");
+            }
             ApplySettings();
         });
         inputMenu.Show(anchor, at);
@@ -181,15 +192,46 @@ class MainForm : Form
     {
         var k = Dialogs.CaptureHotkey(this, Ddc.InputName(code));
         if (k == Keys.None) return;
-        Settings.Bindings.RemoveAll(b => b.Key == k || IsBindingFor(b, m, code));
-        Settings.Bindings.Add(new Binding { Key = k, MonitorId = m.ShortId, Input = code });
+        // With identical models, only this unit's own binding is replaced; a model-wide one belongs to the others too.
+        Settings.Bindings.RemoveAll(b => b.Key == k || IsBindingFor(b, m, code, !IsShared(m)));
+        Settings.Bindings.Add(new Binding { Key = k, MonitorId = StorageId(m), Input = code });
         ApplySettings();
     }
 
-    // Only bindings for this exact monitor; a "*" binding is left alone.
-    static bool IsBindingFor(Binding b, MonitorInfo m, int code)
+    // Removes this unit's hotkey for the input. A model-wide binding (legacy ShortId) also covers the other units
+    // of the model, so with identical models it is first replaced by explicit per-unit bindings for those.
+    void RemoveHotkey(MonitorInfo m, int code)
     {
-        return b.Input == code && string.Equals(b.MonitorId, m.ShortId, StringComparison.OrdinalIgnoreCase);
+        if (IsShared(m))
+        {
+            var others = OtherUnits(m).ToList();
+            foreach (var wide in Settings.Bindings.Where(b => b.Input == code && string.Equals(b.MonitorId, m.ShortId, StringComparison.OrdinalIgnoreCase)).ToList())
+                foreach (var o in others)
+                    if (o.UnitId != o.ShortId && !Settings.Bindings.Any(b => b.Input == code && o.IsUnit(b.MonitorId)))
+                        Settings.Bindings.Add(new Binding { Key = wide.Key, MonitorId = o.UnitId, Input = code });
+        }
+        Settings.Bindings.RemoveAll(b => IsBindingFor(b, m, code, true));
+    }
+
+    // Other listed monitors with the same model id. Compared by Device + UnitId: the list may be replaced by a
+    // Reload while a dialog is open, so reference equality is not reliable.
+    IEnumerable<MonitorInfo> OtherUnits(MonitorInfo m)
+    {
+        return monitors.Where(x => string.Equals(x.ShortId, m.ShortId, StringComparison.OrdinalIgnoreCase)
+            && !(x.Device == m.Device && x.UnitId == m.UnitId));
+    }
+
+    // Another listed monitor has the same model id, so ShortId alone can't tell the units apart.
+    bool IsShared(MonitorInfo m) { return OtherUnits(m).Any(); }
+
+    // Single-model setups keep storing the short id (unchanged ini); identical models store the unit id.
+    string StorageId(MonitorInfo m) { return IsShared(m) ? m.UnitId : m.ShortId; }
+
+    // Bindings for this exact unit, plus model-wide (short id) ones when includeModelWide; a "*" binding is left alone.
+    static bool IsBindingFor(Binding b, MonitorInfo m, int code, bool includeModelWide)
+    {
+        return b.Input == code && (m.IsUnit(b.MonitorId)
+            || (includeModelWide && string.Equals(b.MonitorId, m.ShortId, StringComparison.OrdinalIgnoreCase)));
     }
 
     void ApplySettings()

@@ -49,6 +49,8 @@ class TrayApp : IDisposable
         if (!hidden) ShowWindow();
         WarnFailedHotkeys();
         Log.Info("Started");
+        // Hidden start: no window will reload, so scan once here for the per-monitor diagnostics in log.txt.
+        if (hidden) RunInBackground("Monitor scan", () => Ddc.List(true));
     }
 
     void BuildMenu()
@@ -60,7 +62,7 @@ class TrayApp : IDisposable
         foreach (var b in Settings.Bindings)
         {
             var binding = b;
-            var text = (Settings.Label(b.MonitorId, b.Input) ?? Ddc.InputName(b.Input)) + "   (" + KeyText.Format(b.Key) + ")";
+            var text = (Settings.LabelById(b.MonitorId, b.Input) ?? Ddc.InputName(b.Input)) + "   (" + KeyText.Format(b.Key) + ")";
             menu.Items.Add(text, null, (s, e) => Switch(binding.MonitorId, null, binding.Input));
         }
         menu.Items.Add(new ToolStripSeparator());
